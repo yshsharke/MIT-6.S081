@@ -149,6 +149,11 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_sleep\
+	$U/_pingpong\
+	$U/_primes\
+	$U/_find\
+	$U/_xargs\
 
 
 ifeq ($(LAB),syscall)
@@ -219,9 +224,9 @@ qemu-gdb: $K/kernel .gdbinit fs.img
 ##  FOR testing lab grading script
 ##
 
-ifneq ($(V),@)
-GRADEFLAGS += -v
-endif
+# ifneq ($(V),@)
+# GRADEFLAGS += -v
+# endif
 
 print-gdbport:
 	@echo $(GDBPORT)
