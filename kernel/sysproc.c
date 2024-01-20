@@ -14,7 +14,7 @@ sys_exit(void)
   if(argint(0, &n) < 0)
     return -1;
   exit(n);
-  return 0;  // not reached
+  return 0; // not reached
 }
 
 uint64
@@ -62,8 +62,8 @@ sys_sleep(void)
     return -1;
   acquire(&tickslock);
   ticks0 = ticks;
-  while(ticks - ticks0 < n){
-    if(myproc()->killed){
+  while(ticks - ticks0 < n) {
+    if(myproc()->killed) {
       release(&tickslock);
       return -1;
     }
@@ -94,4 +94,23 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+  int mask;
+  if(argint(0, &mask) < 0)
+    return -1;
+  myproc()->tracemask = mask;
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 info; // user pointer to struct sysinfo
+  if(argaddr(0, &info) < 0)
+    return -1;
+  return sysinfo(info);
 }
