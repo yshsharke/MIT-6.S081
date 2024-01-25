@@ -126,13 +126,13 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 // addresses on the stack.
 // assumes va is page aligned.
 uint64
-kvmpa(uint64 va)
+kvmpa(pagetable_t pagetable, uint64 va)
 {
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
-  pte = walk(kernel_pagetable, va, 0);
+
+  pte = walk(pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -379,6 +379,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  return copyin_new(pagetable, dst, srcva, len);
+  
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -405,6 +407,8 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  return copyinstr_new(pagetable, dst, srcva, max);
+
   uint64 n, va0, pa0;
   int got_null = 0;
 
@@ -439,4 +443,186 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// Recursively print page table entry.
+void 
+vmprint_level(pagetable_t pagetable, int level)
+{
+  for(int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V) {
+      switch(level) {
+      case 2:
+        printf("..%d: ", i);
+        break;
+      case 1:
+        printf(".. ..%d: ", i);
+        break;
+      case 0:
+        printf(".. .. ..%d: ", i);
+      default:
+        break;
+      }
+      uint64 pa = PTE2PA(pte);
+      printf("pte %p pa %p\n", pte, pa);
+
+      if(level > 0){
+        vmprint_level((pagetable_t)pa, level - 1);
+      }
+    }
+  }
+}
+
+// Print page table.
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_level(pagetable, 2);
+}
+
+/*
+ * create a direct-map page table for per-process kernel.
+ */
+pagetable_t
+ukvminit()
+{
+  pagetable_t kpagetable = (pagetable_t)kalloc();
+  if(kpagetable == 0)
+    return 0;
+  memset(kpagetable, 0, PGSIZE);
+
+  // uart registers
+  ukvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  ukvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // PLIC
+  ukvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  ukvmmap(kpagetable, KERNBASE, KERNBASE, (uint64)etext - KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  ukvmmap(kpagetable, (uint64)etext, (uint64)etext, PHYSTOP - (uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  ukvmmap(kpagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return kpagetable;
+}
+
+// add a mapping to the per-process kernel page table.
+// does not flush TLB or enable paging.
+void
+ukvmmap(pagetable_t kpagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(kpagetable, va, sz, pa, perm) != 0)
+    panic("ukvmmap");
+}
+
+// Remove npages of mappings starting from va. va must be
+// page-aligned. The mappings must exist.
+void
+ukvmunmap(pagetable_t kpagetable, uint64 va, uint64 npages, int do_free)
+{
+  uint64 a;
+  pte_t *pte;
+
+  if((va % PGSIZE) != 0)
+    panic("ukvmunmap: not aligned");
+
+  for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    if((pte = walk(kpagetable, a, 0)) == 0)
+      panic("ukvmunmap: walk");
+    if((*pte & PTE_V) == 0)
+      panic("ukvmunmap: not mapped");
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("ukvmunmap: not a leaf");
+    if(do_free) {
+      uint64 pa = PTE2PA(*pte);
+      kfree((void *)pa);
+    }
+    *pte = 0;
+  }
+}
+
+// Recursively free per-process kernel page-table pages.
+// All leaf mappings should already have been removed in freeing user page table.
+void
+ukfreewalk(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      ukfreewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void *)pagetable);
+}
+
+// Free per-process kernel page table.
+// Do not free the physical memory.
+void
+ukvmfree(pagetable_t kpagetable)
+{
+  // uart registers
+  ukvmunmap(kpagetable, UART0, 1, 0);
+
+  // virtio mmio disk interface
+  ukvmunmap(kpagetable, VIRTIO0, 1, 0);
+
+  // PLIC
+  ukvmunmap(kpagetable, PLIC, PGROUNDUP(0x400000) / PGSIZE, 0);
+
+  // map kernel text executable and read-only.
+  ukvmunmap(kpagetable, KERNBASE, PGROUNDUP((uint64)etext - KERNBASE) / PGSIZE, 0);
+
+  // map kernel data and the physical RAM we'll make use of.
+  ukvmunmap(kpagetable, (uint64)etext, PGROUNDUP(PHYSTOP - (uint64)etext) / PGSIZE, 0);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  ukvmunmap(kpagetable, TRAMPOLINE, 1, 0);
+
+  ukfreewalk(kpagetable);
+}
+
+// Copy a user page table mappings into a per-process kernel page table.
+// Do not copy physical memory.
+// Returns 0 on success, -1 on failure.
+// Do not free allocated pages on failure.
+int
+ukvmcopy(pagetable_t upagetable, pagetable_t kpagetable, uint64 va, uint64 sz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  if(va + sz > PLIC)
+    panic("ukvmcopy: user process overlap");
+
+  for(i = PGROUNDUP(va); i < va + sz; i += PGSIZE) {
+    if((pte = walk(upagetable, i, 0)) == 0)
+      panic("ukvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("ukvmcopy: page not present");
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte) & (~PTE_U);
+    if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0) {
+      goto err;
+    }
+  }
+  return 0;
+
+err:
+  ukvmunmap(kpagetable, 0, i / PGSIZE, 0);
+  return -1;
 }
