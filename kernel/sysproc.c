@@ -58,6 +58,8 @@ sys_sleep(void)
   int n;
   uint ticks0;
 
+  backtrace();
+
   if(argint(0, &n) < 0)
     return -1;
   acquire(&tickslock);
@@ -94,4 +96,45 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_sigalarm(void)
+{
+  int ticks;
+  uint64 handler;
+  struct proc *p = myproc();
+
+  if(argint(0, &ticks) < 0 || argaddr(1, &handler) < 0)
+    return -1;
+
+  if(ticks != 0 && !p->atrapframe){
+    // Allocate a trapframe page for alarm.
+    if((p->atrapframe = (struct trapframe *)kalloc()) == 0) {
+      release(&p->lock);
+      return 0;
+    }
+  } else if(ticks == 0 && p->atrapframe){
+    kfree((void *)p->atrapframe);
+    p->atrapframe = 0;
+  }
+
+  p->alarminterval = ticks;
+  p->alarmhandler = (void (*)())handler;
+  p->alarmticks = 0;
+  p->alarmstatus = 0;
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+
+  if(p->alarminterval != 0)
+    // restore trapframe
+    *(p->trapframe) = *(p->atrapframe);
+
+  p->alarmstatus = 0;
+  return 0;
 }

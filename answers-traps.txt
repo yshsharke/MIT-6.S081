@@ -1,0 +1,6 @@
+a2;
+jalr	1536(ra), inline;
+0x630;
+0x38;
+HE110 World, 0x726c6400;
+(a2)
