@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -79,8 +81,11 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
-      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0){
+        // printf("walk error at level %d at pgtbl %p at index %d at pte %p at va %p\n", level, pagetable, PX(level, va), *pte, va);
+        // vmprint(pagetable);
         return 0;
+      }
       memset(pagetable, 0, PGSIZE);
       *pte = PA2PTE(pagetable) | PTE_V;
     }
@@ -181,7 +186,8 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      continue;
+      //panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
       continue;
       //panic("uvmunmap: not mapped");
@@ -316,9 +322,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;
+      // panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
+      // panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -360,8 +368,12 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0){
+      if(uvmlazyalloc(va0) != 0) {
+        return -1;
+      }
+      pa0 = walkaddr(pagetable, va0);
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -385,8 +397,12 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0){
+      if(uvmlazyalloc(va0) != 0){
+        return -1;
+      }
+      pa0 = walkaddr(pagetable, va0);
+    }
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
@@ -440,4 +456,65 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// Recursively print page table entry.
+void
+vmprint_level(pagetable_t pagetable, int level)
+{
+  for(int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V) {
+      switch(level) {
+      case 2:
+        printf("..%d: ", i);
+        break;
+      case 1:
+        printf(".. ..%d: ", i);
+        break;
+      case 0:
+        printf(".. .. ..%d: ", i);
+      default:
+        break;
+      }
+      uint64 pa = PTE2PA(pte);
+      printf("pte %p pa %p\n", pte, pa);
+
+      if(level > 0) {
+        vmprint_level((pagetable_t)pa, level - 1);
+      }
+    }
+  }
+}
+
+// Print page table.
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_level(pagetable, 2);
+}
+
+// Lazy alloc memory for user process
+int
+uvmlazyalloc(uint64 va)
+{
+  struct proc *p = myproc();
+  if(va >= p->sz || va < p->trapframe->sp) {
+    return -1;
+  } else if(walkaddr(p->pagetable, va) == 0) {
+    va = PGROUNDDOWN(va);
+    char *mem = kalloc();
+    // printf("kalloc mem = %p\n", mem);
+    if(mem == 0) {
+      return -1;
+    }
+    memset(mem, 0, PGSIZE);
+    if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W | PTE_X | PTE_R | PTE_U) != 0) {
+      kfree(mem);
+      uvmdealloc(p->pagetable, va, p->sz);
+      return -1;
+    }
+  }
+  return 0;
 }

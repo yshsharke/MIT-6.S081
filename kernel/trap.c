@@ -68,25 +68,11 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else if (r_scause() == 13 || r_scause() == 15){
-    // printf("pagefault: %p\n", r_stval());
+    // vmprint(p->pagetable);
+    // printf("pagefault %d at %p\n", r_scause(), r_stval());
     uint64 va = r_stval();
-    if(va >= p->sz){
-      printf("usertrap: invalid viitual address\n");
+    if(uvmlazyalloc(va) != 0){
       p->killed = 1;
-    } else {
-      va = PGROUNDDOWN(va);
-      char *mem = kalloc();
-      if(mem == 0) {
-        printf("usertrap: out of memory\n");
-        p->killed = 1;
-      }
-      memset(mem, 0, PGSIZE);
-      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W | PTE_X | PTE_R | PTE_U) != 0) {
-        kfree(mem);
-        uvmdealloc(p->pagetable, va, p->sz);
-        printf("usertrap: map failed\n");
-        p->killed = 1;
-      }
     }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
