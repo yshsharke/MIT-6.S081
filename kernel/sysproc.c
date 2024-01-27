@@ -47,7 +47,10 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
-  if(growproc(n) < 0)
+  printf("cur sz: %d, next sz: %d\n", addr, addr + n);
+  if(n > 0)
+    myproc()->sz = addr + n;
+  else if(growproc(n) < 0)
     return -1;
   return addr;
 }
