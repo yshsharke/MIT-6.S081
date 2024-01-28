@@ -111,6 +111,44 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
+// Look up a virtual address, return the physical address,
+// or 0 if not mapped.
+// Can only be used to look up user pages.
+// kalloc and create mapping if encounter a COW PTE.
+uint64
+walkwritableaddr(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa;
+  uint flags;
+  char *mem;
+
+  if(va >= MAXVA) return 0;
+
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+  if((*pte & PTE_V) == 0)
+    return 0;
+  if((*pte & PTE_U) == 0)
+    return 0;
+  if((*pte & PTE_COW) != 0){
+    if((*pte & PTE_W) != 0)
+      return 0;
+    pa = PTE2PA(*pte);
+    flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+    if((mem = kalloc()) == 0)
+      return -1;
+    memmove(mem, (char *)pa, PGSIZE);
+    *pte = PA2PTE((uint64)mem) | flags;
+    unref(pa);
+    // printf("walkwritabladdr kalloc %p map to %p copy from %p\n", mem, va, pa);
+    return (uint64)mem;
+  }
+  pa = PTE2PA(*pte);
+  return pa;
+}
+
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -188,7 +226,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not a leaf");
     if(do_free){
       uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      kfree((void *)pa);
     }
     *pte = 0;
   }
@@ -311,7 +349,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,14 +357,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    // clear PTE_W and mark PTE_COW
+    *pte = ((*pte) & (~PTE_W)) | PTE_COW;
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      // kfree(mem);
       goto err;
     }
+    // increment ref count
+    ref(pa);
+    // printf("lazycopy %p map to %p\n", pa, i);
   }
   return 0;
 
@@ -358,7 +401,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = walkwritableaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
@@ -439,4 +482,68 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int
+copyonwrite(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa;
+  uint flags;
+  char *mem;
+
+  va = PGROUNDDOWN(va);
+  if((pte = walk(pagetable, va, 0)) == 0)
+    panic("copyonwrite: pte should exist");
+  if((*pte & PTE_V) == 0)
+    panic("copyonwrite: page not present");
+  if((*pte & PTE_COW) == 0)
+    return -1;
+  pa = PTE2PA(*pte);
+  flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+  if((mem = kalloc()) == 0)
+    return -1;
+  memmove(mem, (char*)pa, PGSIZE);
+  *pte = PA2PTE((uint64)mem) | flags;
+  unref(pa);
+  // printf("copyonwrite kalloc %p map to %p copy from %p\n", PTE2PA(*pte), va, pa);
+  return 0;
+
+}
+
+// Recursively print page table entry.
+void
+vmprint_level(pagetable_t pagetable, int level)
+{
+  for(int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V) {
+      switch(level) {
+      case 2:
+        printf("..%d: ", i);
+        break;
+      case 1:
+        printf(".. ..%d: ", i);
+        break;
+      case 0:
+        printf(".. .. ..%d: ", i);
+      default:
+        break;
+      }
+      uint64 pa = PTE2PA(pte);
+      printf("pte %p pa %p\n", pte, pa);
+
+      if(level > 0) {
+        vmprint_level((pagetable_t)pa, level - 1);
+      }
+    }
+  }
+}
+
+// Print page table.
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_level(pagetable, 2);
 }
