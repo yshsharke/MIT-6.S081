@@ -1,0 +1,5 @@
+Why are there missing keys with 2 threads, but not with 1 thread?
+Identify a sequence of events with 2 threads that can lead to a key being missing. 
+
+Thread 1 puts <1, 'a'> into the hash table while thread 2 puts <6, 'b> into it.
+One thread modify table[i], which overwrite another thread's change to the hash table.

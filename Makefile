@@ -252,7 +252,8 @@ clean:
 	*/*.o */*.d */*.asm */*.sym \
 	$U/initcode $U/initcode.out $K/kernel fs.img \
 	mkfs/mkfs .gdbinit \
-        $U/usys.S \
+	$U/usys.S \
+	ph \
 	$(UPROGS)
 
 # try to generate a unique GDB port
