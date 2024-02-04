@@ -274,6 +274,19 @@ fork(void)
     return -1;
   }
 
+  for(int i = 0; i < NVMAS; i++) {
+    if(p->vmas[i].valid) {
+      np->vmas[i].valid = 1;
+      np->vmas[i].addr = p->vmas[i].addr;
+      np->vmas[i].length = p->vmas[i].length;
+      np->vmas[i].prot = p->vmas[i].prot;
+      np->vmas[i].flags = p->vmas[i].flags;
+      np->vmas[i].fd = p->vmas[i].fd;
+      np->vmas[i].offset = p->vmas[i].offset;
+      np->vmas[i].f = filedup(p->vmas[i].f);
+    }
+  }
+
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -344,9 +357,16 @@ exit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  for(struct vma *vmap = p->vmas; vmap < p->vmas + NVMAS; vmap++) {
+    if(vmap->valid) {
+      uvmunmap(p->pagetable, vmap->addr, PGROUNDUP(vmap->length) / PGSIZE, 1);
+      vmap->valid = 0;
+    }
+  }
+
   // Close all open files.
-  for(int fd = 0; fd < NOFILE; fd++){
-    if(p->ofile[fd]){
+  for(int fd = 0; fd < NOFILE; fd++) {
+    if(p->ofile[fd]) {
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
